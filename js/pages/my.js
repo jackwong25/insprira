@@ -301,33 +301,98 @@ export async function viewMyStyle(el, d) {
 }
 
 export async function presetMyInspirations(el, d) {
-  toast('正在生成预设选题…', 'info');
+  // 找到对应按钮，进入 loading 状态
+  const btn = document.querySelector(`[data-action="presetMyInspirations"][data-id="${CSS.escape(d.id)}"]`);
+  const originalHtml = btn?.innerHTML;
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add('opacity-60', 'pointer-events-none');
+    btn.innerHTML = '<i data-lucide="loader-circle" class="w-3 h-3 animate-spin"></i>生成中…';
+    initIcons(btn);
+  }
   try {
     const ideas = await localApi(`my-accounts/${encodeURIComponent(d.id)}/preset-inspirations`, { method: 'POST' });
-    if (!ideas?.length) { toast('未生成选题，请确认赛道已提炼且有热点数据', 'error'); return; }
-    const modal = document.createElement('div');
-    modal.className = 'modal-mask';
-    modal.innerHTML = `<div class="modal" style="max-width:720px;max-height:85vh;overflow:auto" data-action="stopPropagation">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-bold">预设选题（${ideas.length}）</h2>
-        <button class="btn btn-ghost py-1 px-2" data-action="closeModal"><i data-lucide="x" class="w-4 h-4"></i></button>
+    if (!ideas?.length) {
+      toast('未能生成选题（LLM 返回为空），请确认赛道已提炼', 'error');
+      return;
+    }
+    showPresetInspirationsModal(d.id, ideas);
+  } catch (e) {
+    toast(`生成失败：${e.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('opacity-60', 'pointer-events-none');
+      btn.innerHTML = originalHtml || '<i data-lucide="lightbulb" class="w-3 h-3"></i>生成预设选题';
+      initIcons(btn);
+    }
+  }
+}
+
+function showPresetInspirationsModal(accountId, ideas) {
+  window._presetIdeas = ideas;
+  window._presetAccountId = accountId;
+  const modal = document.createElement('div');
+  modal.className = 'modal-mask';
+  modal.innerHTML = `<div class="modal flex flex-col" style="max-width:720px;max-height:85vh" data-action="stopPropagation">
+    <div class="flex items-center justify-between mb-3 flex-shrink-0 px-1">
+      <h2 class="text-lg font-bold">预设选题（${ideas.length}）</h2>
+      <button class="btn btn-ghost py-1 px-2" data-action="closeModal"><i data-lucide="x" class="w-4 h-4"></i></button>
+    </div>
+    <div class="overflow-y-auto scrollbar-thin flex-1 min-h-0 space-y-2 pr-1">
+      ${ideas.map((idea, i) => `
+        <label class="flex items-start gap-2 p-3 bg-white/[0.02] rounded-lg cursor-pointer hover:bg-white/[0.04]">
+          <input type="checkbox" class="preset-idea-check mt-1" data-idx="${i}" checked>
+          <div class="flex-1 min-w-0">
+            <div class="font-medium text-sm">${esc(idea.title || '')}</div>
+            ${idea.angle ? `<div class="text-[11px] text-gray-500 mt-1">角度：${esc(idea.angle)}</div>` : ''}
+            ${idea.platform && idea.platform !== 'all' ? `<div class="text-[10px] text-purple-300 mt-1">${esc(platName(idea.platform))}</div>` : ''}
+          </div>
+        </label>`).join('')}
+    </div>
+    <div class="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-white/5 flex-shrink-0">
+      <div class="text-[11px] text-gray-500">已勾选 <span id="preset-check-count">${ideas.length}</span> / ${ideas.length}</div>
+      <div class="flex gap-2">
+        <button class="btn btn-ghost py-1.5 text-xs" data-action="closeModal">关闭</button>
+        <button class="btn btn-primary py-1.5 text-xs" data-action="addPresetToInspirations"><i data-lucide="plus" class="w-3 h-3"></i>添加到灵感库</button>
       </div>
-      <div class="space-y-2">
-        ${ideas.map((idea, i) => `
-          <div class="p-3 bg-white/[0.02] rounded-lg">
-            <div class="flex items-start gap-2">
-              <span class="pill pill-amber flex-shrink-0">${i + 1}</span>
-              <div class="flex-1 min-w-0">
-                <div class="font-medium text-sm">${esc(idea.title || '')}</div>
-                ${idea.angle ? `<div class="text-[11px] text-gray-500 mt-1">角度：${esc(idea.angle)}</div>` : ''}
-                ${idea.platform ? `<div class="text-[10px] text-purple-300 mt-1">${esc(platName(idea.platform === 'all' ? '' : idea.platform) || idea.platform)}</div>` : ''}
-              </div>
-            </div>
-          </div>`).join('')}
-      </div>
-      <div class="text-[11px] text-gray-500 mt-3">可手动添加到「灵感库」开始创作</div>
-    </div>`;
-    document.body.appendChild(modal);
-    initIcons(modal);
-  } catch (e) { toast(e.message, 'error'); }
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  initIcons(modal);
+  // 实时更新计数
+  modal.querySelectorAll('input.preset-idea-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const checked = modal.querySelectorAll('input.preset-idea-check:checked').length;
+      const countEl = modal.querySelector('#preset-check-count');
+      if (countEl) countEl.textContent = checked;
+    });
+  });
+}
+
+export async function addPresetToInspirations() {
+  const checked = Array.from(document.querySelectorAll('input.preset-idea-check:checked')).map(cb => Number(cb.dataset.idx));
+  if (!checked.length) { toast('请至少勾选 1 条选题', 'error'); return; }
+  const ideas = (window._presetIdeas || []).filter((_, i) => checked.includes(i));
+  try {
+    // 调用现有的 inspirations POST 端点
+    for (const idea of ideas) {
+      await localApi('inspirations', {
+        method: 'POST',
+        body: {
+          title: idea.title,
+          summary: idea.angle || '',
+          angle: '预设',
+          targetPlatform: idea.platform === 'all' ? '' : idea.platform,
+          sourceMode: 'llm-reasoning',
+          sourceKeywords: [],
+          sourceItems: [],
+        },
+      });
+    }
+    toast(`已添加 ${ideas.length} 条到灵感库`, 'success');
+    document.querySelector('.modal-mask')?.remove();
+  } catch (e) {
+    toast(`添加失败：${e.message}`, 'error');
+  }
 }

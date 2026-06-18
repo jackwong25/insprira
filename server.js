@@ -1182,18 +1182,24 @@ async function generatePresetInspirations(account) {
       hotKeywords = (data?.keywords || data?.items || []).slice(0, 20).map(k => typeof k === 'string' ? k : (k.keyword || k.title || ''));
     } catch {}
   }
+  const hasHot = hotKeywords.length > 0;
+  const systemPrompt = hasHot
+    ? `你是自媒体选题策划师。基于用户的赛道标签和当前热点关键词，生成 8 个适合的预设选题。每个选题包含标题、角度（一句话说明切入角度）、目标平台。严格输出 JSON：{"ideas": [{"title": "...", "angle": "...", "platform": "dy|xhs|gzh|all"}]}`
+    : `你是自媒体选题策划师。基于用户的赛道标签，生成 8 个适合的预设选题（当前无热点数据，仅基于赛道）。每个选题包含标题、角度、目标平台。严格输出 JSON：{"ideas": [{"title": "...", "angle": "...", "platform": "dy|xhs|gzh|all"}]}`;
+  const userPrompt = hasHot
+    ? `我的赛道：${tracks.join('、')}\n\n当前热点关键词：\n${hotKeywords.join('、')}\n\n请基于「我的赛道 ∩ 当前热点」生成 8 个适合的选题。严格输出：{"ideas": [...]}`
+    : `我的赛道：${tracks.join('、')}\n\n请基于赛道生成 8 个适合的选题。严格输出：{"ideas": [...]}`;
   const messages = [
-    { role: 'system', content: '你是自媒体选题策划师。基于用户的赛道标签和当前热点关键词，生成 5-8 个预设选题主题。每个选题包含标题、角度、目标平台。返回 JSON 数组。' },
-    { role: 'user', content: `我的赛道：${tracks.join('、')}
-
-当前热点关键词：
-${hotKeywords.join('、') || '（暂无热点数据）'}
-
-请基于我的赛道 ∩ 当前热点，生成 5-8 个适合的选题。严格 JSON 数组格式：
-[{"title": "...", "angle": "...", "platform": "dy|xhs|gzh|all"}]` },
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
   ];
   const result = await callLlmJson(messages);
-  return Array.isArray(result) ? result : (result?.data || result?.items || []);
+  const ideas = Array.isArray(result) ? result : (result?.ideas || result?.data || result?.items || []);
+  return ideas.map(idea => ({
+    title: String(idea?.title || '').trim(),
+    angle: String(idea?.angle || '').trim(),
+    platform: String(idea?.platform || 'all').trim(),
+  })).filter(idea => idea.title);
 }
 
 function publicUser(row) {
@@ -5461,6 +5467,27 @@ async function handleLocalApi(req, res, url) {
     const favorite = db.prepare('SELECT COUNT(*) AS n FROM inspirations WHERE deleted_at IS NULL AND is_favorite = 1').get().n;
     const trash = db.prepare('SELECT COUNT(*) AS n FROM inspirations WHERE deleted_at IS NOT NULL').get().n;
     json(res, 200, { ok: true, data: { active, favorite, trash } });
+    return true;
+  }
+  if (url.pathname === '/api/_/inspirations' && req.method === 'POST') {
+    const { data } = await readBody(req);
+    const title = String(data.title || '').trim();
+    if (!title) { json(res, 400, { ok: false, error: '标题必填' }); return true; }
+    const id = data.id || `insp:${crypto.randomUUID()}`;
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO inspirations (id, title, summary, angle, target_platform, source_keywords, source_items, status, created_at, updated_at, generation_type, source_mode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title, summary = excluded.summary, updated_at = excluded.updated_at
+    `).run(
+      id, title, String(data.summary || ''), String(data.angle || '预设'),
+      String(data.targetPlatform || ''), JSON.stringify(data.sourceKeywords || []),
+      JSON.stringify(data.sourceItems || []), String(data.status || '待研究'),
+      now, now, String(data.generationType || 'manual'),
+      String(data.sourceMode || 'llm-reasoning')
+    );
+    json(res, 200, { ok: true, data: { id } });
     return true;
   }
   if (url.pathname === '/api/_/inspirations/generate' && req.method === 'POST') {
