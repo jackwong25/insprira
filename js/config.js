@@ -80,8 +80,14 @@ export const NOTIFICATION_CHANNELS = [
 // ============= Cron 常量 =============
 export const BUILTIN_CRONS = [
   'hot-realtime', 'hot-daily-dy', 'hot-daily-xhs', 'hot-daily-gzh',
-  'hot-daily-ai-gzh', 'hot-daily-ai-bili', 'hot-daily-ai-xhs',
   'hot-trend-analysis', 'hot-daily-report', 'tracked-account-daily', 'cache-clean', 'usage-clean',
   'wersss-sync',
 ];
 export const LOCKED_CRONS = ['cache-clean', 'usage-clean'];
+
+// 系统固定任务：在 cron 列表中禁止删除（与热榜 tab 解耦）
+export const PROTECTED_CRONS = [
+  'cache-clean', 'usage-clean',
+  'hot-realtime', 'hot-trend-analysis', 'hot-daily-report',
+  'tracked-account-daily', 'wersss-sync',
+];

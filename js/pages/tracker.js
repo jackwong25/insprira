@@ -150,7 +150,7 @@ export function renderTracker() {
           ${t.plat === 'gzh' ? `<button class="btn btn-primary flex-1 justify-center text-[11px] py-1" data-action="viewTracker" data-id="${t.id}"><i data-lucide="file-text" class="w-3 h-3"></i>查看作品</button>`
             : `<button class="btn btn-ghost flex-1 justify-center text-[11px] py-1" data-action="viewTracker" data-id="${t.id}"><i data-lucide="eye" class="w-3 h-3"></i>查看</button>`}
           <button class="btn btn-ghost flex-1 justify-center text-[11px] py-1" data-action="diagnoseTracker" data-id="${t.id}"><i data-lucide="activity" class="w-3 h-3"></i>评分详情</button>
-          ${t.group === '自己' ? `<button class="btn btn-ghost text-[11px] py-1" data-action="viewTrackerTrend" data-id="${t.id}" title="账号趋势解读"><i data-lucide="line-chart" class="w-3 h-3"></i></button>` : ''}
+          <button class="btn btn-ghost text-[11px] py-1" data-action="viewTrackerTrend" data-id="${t.id}" title="账号趋势"><i data-lucide="line-chart" class="w-3 h-3"></i></button>
           <button class="btn btn-ghost text-[11px] py-1" data-action="editTracker" data-id="${t.id}" title="编辑账号"><i data-lucide="pencil" class="w-3 h-3"></i></button>
           <button class="btn btn-ghost text-[11px] py-1" data-action="removeTracker" data-id="${t.id}" title="移除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
         </div>`}
@@ -660,11 +660,13 @@ export async function reRunDiagnosis(id) {
 export async function viewTrackerTrend(id) {
   try {
     const data = await localApi(`trackers/${encodeURIComponent(id)}/trend?limit=30`);
-    const snapshots = data.snapshots || [];
-    const latest = snapshots[0];
+    const snapshots = (data.snapshots || []).slice().reverse();
+    const latest = data.snapshots?.[0];
     const analysis = latest?.analysis || {};
     const modal = document.createElement('div');
     modal.className = 'modal-mask';
+    const chartId = 'tracker-trend-chart-' + Date.now();
+    const hasData = snapshots.length > 0;
     modal.innerHTML = `
       <div class="modal flex flex-col" style="max-width:880px;max-height:88vh" data-action="stopPropagation">
         <div class="flex items-center justify-between px-6 py-4 border-b border-white/5">
@@ -677,9 +679,10 @@ export async function viewTrackerTrend(id) {
             <div class="text-sm">${esc(analysis.summary || '当前快照尚无趋势解读')}</div>
             ${[...(analysis.changes || []), ...(analysis.risks || []), ...(analysis.actions || [])].length ? `<ul class="mt-3 text-xs text-gray-400 space-y-1">${[...(analysis.changes || []), ...(analysis.risks || []), ...(analysis.actions || [])].map(item => `<li>· ${esc(item)}</li>`).join('')}</ul>` : ''}
           </div>` : '<div class="text-sm text-gray-500 mb-5">尚无快照，请先运行评分详情或等待每日任务。</div>'}
+          ${hasData ? `<div class="glass rounded-xl p-4 mb-5"><canvas id="${chartId}" height="220"></canvas></div>` : ''}
           <div class="overflow-x-auto"><table class="w-full text-xs">
             <thead><tr class="text-left text-gray-500 border-b border-white/10"><th class="py-2">日期</th><th>粉丝</th><th>红狐指数</th><th>综合评分</th><th>作品数</th></tr></thead>
-            <tbody>${snapshots.map(item => `<tr class="border-b border-white/5"><td class="py-2">${esc(item.snapshotDate)}</td><td>${fmt(item.followerCount)}</td><td>${fmt(item.redfoxIndex)}</td><td>${fmt(item.score)}</td><td>${fmt(item.workCount)}</td></tr>`).join('')}</tbody>
+            <tbody>${data.snapshots?.map(item => `<tr class="border-b border-white/5"><td class="py-2">${esc(item.snapshotDate)}</td><td>${fmt(item.followerCount)}</td><td>${fmt(item.redfoxIndex)}</td><td>${fmt(item.score)}</td><td>${fmt(item.workCount)}</td></tr>`).join('') || ''}</tbody>
           </table></div>
         </div>
       </div>`;
@@ -688,6 +691,36 @@ export async function viewTrackerTrend(id) {
     });
     document.getElementById('modal-host').appendChild(modal);
     initIcons(modal);
+    if (hasData && typeof window.Chart !== 'undefined') {
+      const ctx = document.getElementById(chartId)?.getContext('2d');
+      if (ctx) {
+        const labels = snapshots.map(s => s.snapshotDate.slice(5));
+        const commonOptions = {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { labels: { color: '#9ca3af', font: { size: 11 } } } },
+          scales: {
+            x: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+            y: { type: 'linear', display: true, position: 'left', ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: '粉丝数', color: '#60a5fa' } },
+            y1: { type: 'linear', display: true, position: 'right', ticks: { color: '#6b7280', font: { size: 10 } }, grid: { drawOnChartArea: false }, title: { display: true, text: '指数/评分/作品', color: '#f472b6' } },
+          },
+        };
+        new window.Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label: '粉丝', data: snapshots.map(s => s.followerCount), borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.1)', yAxisID: 'y', tension: 0.3, fill: true },
+              { label: '红狐指数', data: snapshots.map(s => s.redfoxIndex), borderColor: '#34d399', backgroundColor: 'transparent', yAxisID: 'y1', tension: 0.3 },
+              { label: '综合评分', data: snapshots.map(s => s.score), borderColor: '#f472b6', backgroundColor: 'transparent', yAxisID: 'y1', tension: 0.3 },
+              { label: '作品数', data: snapshots.map(s => s.workCount), borderColor: '#fbbf24', backgroundColor: 'transparent', yAxisID: 'y1', tension: 0.3 },
+            ],
+          },
+          options: commonOptions,
+        });
+      }
+    }
   } catch (e) {
     toast(`趋势加载失败：${e.message}`, 'error');
   }

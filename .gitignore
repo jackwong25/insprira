@@ -15,10 +15,15 @@ cache.db-wal
 
 # 日志与运行时
 *.log
+server.log
+nohup.out
 app.pid
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Docker / 本地数据挂载目录
+data/
 
 # Skill 目录（从官方仓库拉取/热更新，非本仓库源码）
 skills/

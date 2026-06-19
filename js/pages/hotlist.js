@@ -4,13 +4,36 @@ import { esc, fmt } from '../utils.js';
 import { platName, platColor, platCodeByName } from '../config.js';
 import { toast, skeleton, rankBadge } from '../components.js';
 import { initIcons } from '../icons.js';
-import { adaptDY, adaptXHS, adaptGZH, adaptAIGZH, adaptAIBili, adaptAIXHS } from '../core/adapters.js';
+import { adaptDY, adaptXHS, adaptGZH, adaptAIGZH, adaptAIBili, adaptAIXHS, adaptAiFeed } from '../core/adapters.js';
 import { renderListItem } from '../core/renderers.js';
 
 let hotCache = { dy: null, xhs: null, gzh: null, aiGzh: null, hotKeyword: null, hotCacheTime: 0 };
+let hotPlatforms = [];
 
 export function clearHotCache() {
   hotCache = { dy: null, xhs: null, gzh: null, aiGzh: null, hotKeyword: null, hotCacheTime: 0 };
+}
+
+export function clearHotPlatforms() {
+  hotPlatforms = [];
+}
+
+async function loadHotPlatforms() {
+  if (hotPlatforms.length) return hotPlatforms;
+  try {
+    hotPlatforms = await localApi('hot/platforms');
+  } catch (e) {
+    console.warn('加载热榜 platform 列表失败:', e.message);
+    hotPlatforms = [
+      { key: 'dy', label: '抖音 TOP50' },
+      { key: 'xhs', label: '小红书 TOP50' },
+      { key: 'gzh', label: '公众号热门' },
+      { key: 'ai-gzh', label: 'AI 公众号' },
+      { key: 'ai-bili', label: 'AI B站' },
+      { key: 'ai-xhs', label: 'AI 小红书' },
+    ];
+  }
+  return hotPlatforms;
 }
 
 function hotSourceMeta(result, realtime = false) {
@@ -79,12 +102,23 @@ export async function renderHotlist() {
   }
 
   if (!top.isConnected) return;
+  await renderHotTabs();
+  if (!top.isConnected) return;
   await renderHotTab('dy');
   if (!top.isConnected) return;
   await loadHotTrends();
   if (!top.isConnected) return;
   bindHotTabs();
   initIcons(document.getElementById('content-area'));
+}
+
+async function renderHotTabs() {
+  const container = document.getElementById('hot-tabs');
+  if (!container) return;
+  const platforms = await loadHotPlatforms();
+  container.innerHTML = platforms.map((p, idx) =>
+    `<button class="tab-btn ${idx === 0 ? 'active' : ''} px-3 py-1.5 text-sm rounded-md" data-tab="${esc(p.key)}">${esc(p.label)}</button>`
+  ).join('');
 }
 
 export async function syncHotKeywords() {
@@ -109,10 +143,8 @@ export async function renderHotTab(tab) {
   try {
     const result = await localApi('hot/list?platform=' + tab, { abortKey: 'hotlist-tab' });
     if (!content.isConnected) return;
-    const tabNames = {
-      dy: '抖音', xhs: '小红书', gzh: '公众号', 'ai-gzh': 'AI公众号',
-      'ai-bili': 'AI B站', 'ai-xhs': 'AI小红书',
-    };
+    const platforms = await loadHotPlatforms();
+    const tabNames = Object.fromEntries(platforms.map(p => [p.key, p.label]));
     const cronId = `hot-daily-${tab}`;
     const meta = hotSourceMeta(result);
     metaEl.innerHTML = `
@@ -132,6 +164,8 @@ export async function renderHotTab(tab) {
       initIcons(document.getElementById('content-area'));
       return;
     }
+    const platformCfg = platforms.find(p => p.key === tab);
+    const adapter = platformCfg?.adapter;
     let list = [];
     if (tab === 'dy') {
       list = result.slice(0, 20).map(item => adaptDY(item.raw));
@@ -145,6 +179,8 @@ export async function renderHotTab(tab) {
       list = result.slice(0, 50).map(item => adaptAIBili(item.raw));
     } else if (tab === 'ai-xhs') {
       list = result.slice(0, 50).map(item => adaptAIXHS(item.raw));
+    } else if (adapter === 'aiFeed') {
+      list = result.slice(0, 50).map(item => adaptAiFeed(item.raw, tab));
     }
     list = list.filter(item => item.title);
     list.forEach((it, i) => it._rank = i + 1);
@@ -165,10 +201,8 @@ export async function toggleHotPlatformCron(cronId, enabled, tab) {
 }
 
 export async function syncHotTab(tab) {
-  const tabNames = {
-    dy: '抖音', xhs: '小红书', gzh: '公众号', 'ai-gzh': 'AI公众号',
-    'ai-bili': 'AI B站', 'ai-xhs': 'AI小红书',
-  };
+  const platforms = await loadHotPlatforms();
+  const tabNames = Object.fromEntries(platforms.map(p => [p.key, p.label]));
   toast(`正在刷新 ${tabNames[tab] || tab}…`, 'info');
   try {
     await localApi('hot/list/sync?platform=' + tab, { method: 'POST', body: {} });

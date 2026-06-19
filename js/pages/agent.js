@@ -4,6 +4,7 @@ import { esc } from '../utils.js';
 import { toast } from '../components.js';
 import { initIcons } from '../icons.js';
 import { gotoPage } from '../navigation.js';
+import { clearHotPlatforms } from './hotlist.js';
 
 let skillCache = [];
 let agentCache = [];
@@ -30,9 +31,15 @@ export async function renderSkills() {
   try {
     const skills = await loadSkills();
     document.getElementById('skill-local-count').textContent = `${skills.length} 个已下载`;
-    const categories = [...new Set(skills.map(skill => skill.category))];
-    document.getElementById('skillCategory').innerHTML = '<option value="all">全部分类</option>'
-      + categories.map(category => `<option value="${esc(category)}">${esc(category)}</option>`).join('');
+    // 分类下拉固定使用 LLM 五类，不再随原始 category 变化
+    document.getElementById('skillCategory').innerHTML = [
+      '<option value="all">全部分类</option>',
+      '<option value="热点">热点</option>',
+      '<option value="创作">创作</option>',
+      '<option value="分析">分析</option>',
+      '<option value="检索">检索</option>',
+      '<option value="生成工具">生成工具</option>',
+    ].join('');
     filterSkills();
     checkSkillUpdates(false);
   } catch (e) {
@@ -53,7 +60,7 @@ export function filterSkills() {
   grid.innerHTML = filtered.map(skill => {
     const cat = skill.llmCategory || skill.category || '其他';
     const catColor = { '热点': 'pill-hot', '创作': 'pill-brand', '分析': 'pill-sky', '检索': 'pill-green', '生成工具': 'pill-amber' }[cat] || 'pill-gray';
-    const bindable = skill.llmCategory === '热点' && skill.sourceBinding;
+    const bindable = skill.sourceBinding; // 后端配置了热榜映射即显示绑定按钮，不依赖 LLM 分类
     const bindBtn = bindable
       ? `<button class="btn ${skill.cronEnabled ? 'btn-ghost' : 'btn-primary'} py-1 text-[11px] flex-shrink-0" data-action="bindSkillToSource" data-slug="${esc(skill.slug)}" data-stop-propagation title="${skill.cronEnabled ? '已在热榜中' : '启用对应的定时任务'}">
           <i data-lucide="${skill.cronEnabled ? 'check' : 'plus'}" class="w-3 h-3"></i>${skill.cronEnabled ? '已绑定' : '绑定热榜'}
@@ -81,7 +88,9 @@ export async function bindSkillToSource(el, d) {
   if (!d?.slug) return;
   try {
     const result = await localApi(`skills/${encodeURIComponent(d.slug)}/bind-source`, { method: 'POST' });
-    toast(result.alreadyEnabled ? `${d.slug} 已在热榜中` : `已绑定到热榜（${result.cronId}）`, 'success');
+    const action = result.enabled ? '绑定' : '解绑';
+    toast(`${d.slug} 已${action}热榜（${result.cronId}）`, 'success');
+    clearHotPlatforms(); // 清除热榜 tab 缓存，下次进入热榜页面会重新拉取
     await loadSkills(true);
     filterSkills();
   } catch (e) { toast(e.message, 'error'); }

@@ -211,3 +211,7 @@
 .cron-switch input:checked ~ .lbl-off{opacity:0;}
 .cron-switch input:disabled{cursor:not-allowed;}
 .cron-switch input:disabled ~ .track{opacity:.5;}
+
+/* ============ Cron 拖拽排序 ============ */
+[data-drag-id].cron-dragging{opacity:.4;transform:scale(.98);}
+[data-drag-id].cron-drop-target{outline:2px dashed var(--brand,#a78bfa);outline-offset:2px;background:rgba(167,139,250,.08);}

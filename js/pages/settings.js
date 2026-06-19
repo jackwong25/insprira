@@ -2,7 +2,7 @@ import { localApi } from '../api.js';
 import { esc } from '../utils.js';
 import { toast } from '../components.js';
 import { initIcons } from '../icons.js';
-import { NOTIFICATION_CHANNELS, LOCKED_CRONS, BUILTIN_CRONS } from '../config.js';
+import { NOTIFICATION_CHANNELS, LOCKED_CRONS, BUILTIN_CRONS, PROTECTED_CRONS } from '../config.js';
 
 export async function renderSettings() {
   try {
@@ -267,7 +267,7 @@ export async function renderCronList() {
         'wersss-sync':        { color: 'text-purple-300',   bg: 'bg-purple-500/15 border-purple-500/30' },
       }[j.taskType] || { color: 'text-gray-300', bg: 'bg-gray-500/15 border-gray-500/30' };
       return `
-      <div class="bg-white/[0.02] border border-white/10 rounded-lg p-2.5">
+      <div class="bg-white/[0.02] border border-white/10 rounded-lg p-2.5 cursor-grab active:cursor-grabbing" draggable="true" data-drag-id="${esc(j.id)}">
         <div class="flex items-center gap-2 mb-1.5">
           <label class="cron-switch" title="${j.enabled ? '点击暂停' : '点击启用'}">
             <input type="checkbox" ${j.enabled ? 'checked' : ''} class="cron-toggle" data-cron-id="${j.id}" ${LOCKED_CRONS.includes(j.id) ? 'disabled' : ''}>
@@ -290,11 +290,12 @@ export async function renderCronList() {
         <div class="flex items-center justify-end gap-0.5 ml-12 pt-1 border-t border-white/5">
           <button class="btn btn-ghost py-0.5 px-1.5 text-[11px]" data-action="runCronNow" data-id="${j.id}" title="立即执行"><i data-lucide="play" class="w-3 h-3"></i></button>
           ${!LOCKED_CRONS.includes(j.id) ? `<button class="btn btn-ghost py-0.5 px-1.5 text-[11px]" data-action="openCronModal" data-id="${j.id}" title="编辑"><i data-lucide="pencil" class="w-3 h-3"></i></button>` : ''}
-          <button class="btn btn-ghost py-0.5 px-1.5 text-[11px] text-red-400" data-action="deleteCron" data-id="${j.id}" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+          ${!PROTECTED_CRONS.includes(j.id) ? `<button class="btn btn-ghost py-0.5 px-1.5 text-[11px] text-red-400" data-action="deleteCron" data-id="${j.id}" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>` : ''}
         </div>
       </div>`;
     }).join('');
     initIcons(el);
+    bindCronDrag(el);
     const status = document.getElementById('scheduler-status');
     if (status) status.textContent = `共 ${jobs.length} 个任务`;
   } catch (e) {
@@ -303,6 +304,64 @@ export async function renderCronList() {
     if (list) list.innerHTML = `<span class="text-red-400 text-xs">加载失败: ${esc(e.message)}</span>`;
     if (status) status.textContent = '';
   }
+}
+
+let cronDragSrcId = null;
+
+export function bindCronDrag(listEl) {
+  if (!listEl || listEl.dataset.dragBound) return;
+  listEl.dataset.dragBound = '1';
+  listEl.addEventListener('dragstart', (e) => {
+    const card = e.target.closest('[data-drag-id]');
+    if (!card) return;
+    // 避免按钮/开关触发拖拽
+    if (e.target.closest('button, input, label')) { e.preventDefault(); return; }
+    cronDragSrcId = card.dataset.dragId;
+    card.classList.add('cron-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', cronDragSrcId); } catch {}
+  });
+  listEl.addEventListener('dragend', (e) => {
+    const card = e.target.closest('[data-drag-id]');
+    if (card) card.classList.remove('cron-dragging');
+    listEl.querySelectorAll('.cron-drop-target').forEach(el => el.classList.remove('cron-drop-target'));
+    cronDragSrcId = null;
+  });
+  listEl.addEventListener('dragover', (e) => {
+    if (!cronDragSrcId) return;
+    const card = e.target.closest('[data-drag-id]');
+    if (!card || card.dataset.dragId === cronDragSrcId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    listEl.querySelectorAll('.cron-drop-target').forEach(el => el.classList.remove('cron-drop-target'));
+    card.classList.add('cron-drop-target');
+  });
+  listEl.addEventListener('dragleave', (e) => {
+    const card = e.target.closest('[data-drag-id]');
+    if (card) card.classList.remove('cron-drop-target');
+  });
+  listEl.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    if (!cronDragSrcId) return;
+    const target = e.target.closest('[data-drag-id]');
+    listEl.querySelectorAll('.cron-drop-target').forEach(el => el.classList.remove('cron-drop-target'));
+    if (!target || target.dataset.dragId === cronDragSrcId) return;
+    const srcCard = listEl.querySelector(`[data-drag-id="${CSS.escape(cronDragSrcId)}"]`);
+    if (!srcCard) return;
+    // 插入到目标卡片之前或之后
+    const rect = target.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    if (after) target.after(srcCard); else target.before(srcCard);
+    const ids = Array.from(listEl.querySelectorAll('[data-drag-id]')).map(el => el.dataset.dragId);
+    try {
+      await localApi('crons/reorder', { method: 'POST', body: { ids } });
+      toast('排序已保存', 'success');
+      renderCronList();
+    } catch (err) {
+      toast('排序保存失败：' + err.message, 'error');
+      renderCronList();
+    }
+  });
 }
 
 export async function toggleCron(id, enabled) {
@@ -378,7 +437,7 @@ export function openCronModal(editId) {
         document.getElementById('cron-name').value = j.name;
         document.getElementById('cron-expr').value = j.cronExpr;
         document.getElementById('cron-task-type').value = j.taskType;
-        document.getElementById('cron-task-type').disabled = BUILTIN_CRONS.includes(j.id);
+        document.getElementById('cron-task-type').disabled = BUILTIN_CRONS.includes(j.id) || j.taskType === 'hot-platform';
         document.getElementById('cron-notify-failure').checked = j.notifyOnFailure !== false;
         document.getElementById('cron-notify-success').checked = Boolean(j.notifyOnSuccess);
         window._cronEditConfig = j.taskConfig || null;

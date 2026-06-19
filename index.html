@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>灵感熔炉 · Inspiration Furnace</title>
+<title>灵感熔炉 · insprira</title>
 <link rel="icon" href="data:," />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/lucide@1.18.0/dist/umd/lucide.min.js" defer integrity="sha384-UUwTS+RNYj0wSOgt4wIqWyG4Rc/xvrqgHDg/fEwc2e6WEFUooChoVCwkcddDnMaL" crossorigin="anonymous"></script>
@@ -48,7 +48,7 @@
           <div class="text-center text-[11px] text-gray-500 mt-2">默认账号：admin / 123456，首次登录后请立即修改密码</div>
         </form>
       </div>
-      <p class="text-center text-xs text-gray-600 mt-6">Powered by RedFoxHub · 37 个数据 API 驱动</p>
+      <p class="text-center text-xs text-gray-600 mt-6">Powered by RedFoxHub · 37 个数据 API 驱动 · v0.1.3</p>
     </div>
   </div>
 </div>
@@ -65,7 +65,7 @@
           </div>
           <div class="sidebar-brand-text">
             <div class="font-bold text-sm">灵感熔炉</div>
-            <div class="text-[10px] text-gray-500">v0.1.0 · 真实数据</div>
+            <div class="text-[10px] text-gray-500">v0.1.3 · 真实数据</div>
           </div>
         </div>
         <button class="btn desktop-only sidebar-toggle-btn p-1.5 bg-white/10 border border-white/20 text-white hover:bg-white/20 hover:text-white shadow-sm" data-action="toggleSidebar" title="收起/展开侧边栏">
@@ -279,13 +279,8 @@
     <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5" id="hot-top10"></div>
   </div>
   <div class="glass rounded-xl p-5">
-    <div class="flex items-center flex-wrap gap-1 mb-4 border-b border-white/5 -mx-5 px-5 pb-3">
+    <div id="hot-tabs" class="flex items-center flex-wrap gap-1 mb-4 border-b border-white/5 -mx-5 px-5 pb-3">
       <button class="tab-btn active px-3 py-1.5 text-sm rounded-md" data-tab="dy">抖音 TOP50</button>
-      <button class="tab-btn px-3 py-1.5 text-sm rounded-md" data-tab="xhs">小红书 TOP50</button>
-      <button class="tab-btn px-3 py-1.5 text-sm rounded-md" data-tab="gzh">公众号热门</button>
-      <button class="tab-btn px-3 py-1.5 text-sm rounded-md" data-tab="ai-gzh">AI 公众号</button>
-      <button class="tab-btn px-3 py-1.5 text-sm rounded-md" data-tab="ai-bili">AI B站</button>
-      <button class="tab-btn px-3 py-1.5 text-sm rounded-md" data-tab="ai-xhs">AI 小红书</button>
     </div>
     <div id="hot-tab-meta" class="mb-3"></div>
     <div id="hot-tab-content" class="space-y-2"></div>

@@ -33,7 +33,7 @@ const ENV_FILE = path.join(__dirname, '.env');
 loadEnvFile(ENV_FILE);
 
 const PORT = Number(process.env.PORT || 8080);
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || '0.0.0.0';
 const API_KEY = process.env.REDFOX_API_KEY || '';
 const REDFOX_HOST = process.env.REDFOX_HOST || 'redfox.hk';
 const REDFOX_PATH_PREFIX = '/story/api/';
@@ -198,12 +198,18 @@ const REDFOX_ENDPOINTS = new Set([
   'parseWork/queryAiMsgs',
   'parseWork/queryBiliAiMsgs',
   'parseWork/queryXhsAiMsgs',
+  'parseWork/queryDyAiMsgs',
+  'parseWork/queryKsAiMsgs/batch',
+  'parseWork/querySphAiMsgs',
+  'parseWork/queryPlayletMsgs',
   'parseWork/parse',
   'parseWork/imageGen/submitSkill',
   'parseWork/imageGen/result',
   'parseWork/imageGen/uploadImage',
   'skill/record/save',
 ]);
+
+const AI_FEED_PLATFORMS = ['ai-gzh', 'ai-bili', 'ai-xhs', 'ai-dy', 'ai-ks', 'ai-sph', 'playlet-dy', 'playlet-gzh'];
 
 const CACHE_TTL = {
   'hotKeyword/list': 10 * 60 * 1000,
@@ -442,6 +448,7 @@ db.exec(`
     task_type TEXT NOT NULL,
     task_config TEXT,
     last_run INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
 
@@ -655,6 +662,7 @@ db.transaction(() => {
 })();
 ensureColumn('crontab', 'notify_on_failure', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('crontab', 'notify_on_success', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('crontab', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
 
 function migrateLegacyHotSnapshots() {
   if (getLocalData('hot', 'batch-migration-v1')) return;
@@ -711,9 +719,6 @@ function registerDefaultCrons() {
     { id: 'hot-daily-dy', name: '抖音昨日 TOP50', cron_expr: '0 12 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'hot-platform', task_config: { platform: 'dy' } },
     { id: 'hot-daily-xhs', name: '小红书昨日 TOP50', cron_expr: '0 12,20 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'hot-platform', task_config: { platform: 'xhs' } },
     { id: 'hot-daily-gzh', name: '公众号昨日 TOP50', cron_expr: '0 12 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'hot-platform', task_config: { platform: 'gzh' } },
-    { id: 'hot-daily-ai-gzh', name: 'AI 公众号昨日榜', cron_expr: '0 12 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'hot-platform', task_config: { platform: 'ai-gzh' } },
-    { id: 'hot-daily-ai-bili', name: 'AI B站昨日榜', cron_expr: '0 12 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'hot-platform', task_config: { platform: 'ai-bili' } },
-    { id: 'hot-daily-ai-xhs', name: 'AI 小红书昨日榜', cron_expr: '0 12 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'hot-platform', task_config: { platform: 'ai-xhs' } },
     { id: 'hot-trend-analysis', name: '昨日热点关键词趋势分析', cron_expr: '0 23 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'hot-trend-analysis', task_config: null },
     { id: 'hot-daily-report', name: '每日热榜日报推送', cron_expr: '30 9 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'daily-hot-report', task_config: null },
     { id: 'tracked-account-daily', name: '勾选账号昨日数据刷新', cron_expr: '0 7 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'tracker-refresh', task_config: null },
@@ -721,17 +726,48 @@ function registerDefaultCrons() {
     { id: 'usage-clean', name: 'API 用量日志清理', cron_expr: '0 0 * * *', enabled: 1, task_type: 'usage-clean' },
     { id: 'wersss-sync', name: 'WeRss 公众号文章同步', cron_expr: '0 8 * * *', enabled: ENABLE_SCHEDULER ? 1 : 0, task_type: 'wersss-sync', task_config: null },
   ];
+  const now = Date.now();
+  // 系统固定任务允许配置演进（UPSERT），基础热榜 tab 任务只在首次安装时初始化一次，
+  // 之后用户可在 Skill 中心解绑/重新绑定；删除后重启不再自动恢复。
   const upsert = db.prepare(`
-    INSERT INTO crontab (id, name, cron_expr, enabled, task_type, task_config, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO crontab (id, name, cron_expr, enabled, task_type, task_config, sort_order, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
+      cron_expr = excluded.cron_expr,
+      enabled = excluded.enabled,
       task_type = excluded.task_type,
-      task_config = excluded.task_config
+      task_config = excluded.task_config,
+      sort_order = CASE WHEN COALESCE(crontab.sort_order, 0) = 0 THEN excluded.sort_order ELSE crontab.sort_order END
   `);
-  const now = Date.now();
+  const hotTabInsert = db.prepare(`
+    INSERT OR IGNORE INTO crontab (id, name, cron_expr, enabled, task_type, task_config, sort_order, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const hotTabsInitialized = db.prepare("SELECT data_json FROM local_data WHERE module = 'system' AND data_key = 'default_hot_tabs_initialized'").get();
+  const fixHotTabSort = db.prepare(`
+    UPDATE crontab SET sort_order = ? WHERE id = ? AND COALESCE(sort_order, 0) = 0
+  `);
   db.prepare("DELETE FROM crontab WHERE id = 'daily-snapshot'").run();
-  for (const d of defaults) {
+  defaults.forEach((d, idx) => {
+    const isHotTab = d.task_type === 'hot-platform';
+    if (isHotTab) {
+      if (!hotTabsInitialized) {
+        hotTabInsert.run(
+          d.id,
+          d.name,
+          d.cron_expr,
+          d.enabled,
+          d.task_type,
+          d.task_config ? JSON.stringify(d.task_config) : null,
+          idx * 10,
+          now,
+        );
+      }
+      // 已存在但 sort_order 为 0 时补一个默认顺序（不覆盖用户拖拽结果）
+      fixHotTabSort.run(idx * 10, d.id);
+      return;
+    }
     upsert.run(
       d.id,
       d.name,
@@ -739,9 +775,22 @@ function registerDefaultCrons() {
       d.enabled,
       d.task_type,
       d.task_config ? JSON.stringify(d.task_config) : null,
+      idx * 10,
       now,
     );
+  });
+  if (!hotTabsInitialized) {
+    db.prepare(`
+      INSERT INTO local_data (module, data_key, data_json, cached_at, expires_at)
+      VALUES ('system', 'default_hot_tabs_initialized', ?, ?, ?)
+      ON CONFLICT(module, data_key) DO UPDATE SET data_json = excluded.data_json, cached_at = excluded.cached_at
+    `).run(JSON.stringify(true), now, now + 100 * 365 * 24 * 60 * 60 * 1000);
   }
+  // 清理未启用的可绑定 platform cron（它们会在 Skill 中心绑定时动态创建）
+  const bindablePlatforms = ['ai-gzh', 'ai-bili', 'ai-xhs', 'ai-dy', 'ai-ks', 'ai-sph', 'playlet-dy', 'playlet-gzh'];
+  const staleIds = bindablePlatforms.map(p => `hot-daily-${p}`);
+  const placeholders = staleIds.map(() => '?').join(',');
+  db.prepare(`DELETE FROM crontab WHERE id IN (${placeholders}) AND enabled = 0`).run(...staleIds);
 }
 registerDefaultCrons();
 
@@ -1556,8 +1605,30 @@ function parseSkillFile(skillPath) {
       if (match && match[2]) metadata[match[1]] = match[2].trim().replace(/^['"]|['"]$/g, '');
     }
   }
-  const title = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || metadata.name || path.basename(path.dirname(skillPath));
   const slug = path.basename(path.dirname(skillPath));
+  // 标题优先取 frontmatter 后的第一个非代码块一级标题；若取到类似 shell 注释的内容则回退
+  let title = metadata.title?.trim() || '';
+  if (!title) {
+    const bodyStart = frontmatter ? frontmatter[0].length : 0;
+    const body = content.slice(bodyStart);
+    const bodyNoCode = body.replace(/```[\s\S]*?```/g, '');
+    const headingMatch = bodyNoCode.match(/^#\s+(.+)$/m);
+    const rawTitle = headingMatch?.[1]?.trim() || '';
+    title = /^#|export|追加到|\.sh\s*$|~\//i.test(rawTitle) ? '' : rawTitle;
+  }
+  if (!title) title = metadata.name || '';
+  // 如果 name 就是 slug，尝试从 description 提取一个可读标题
+  if (!title || title === slug) {
+    const desc = metadata.description || '';
+    let extracted = desc.split(/[。，！？；;]/)[0].trim();
+    const cutIdx = Math.min(...['专注于', '是', '用于', '—', ' - ', '（', '：', ':'].map(marker => {
+      const i = extracted.indexOf(marker);
+      return i > 0 ? i : Infinity;
+    }));
+    if (cutIdx !== Infinity && cutIdx > 3) extracted = extracted.slice(0, cutIdx).trim();
+    if (extracted && extracted.length >= 4 && extracted.length <= 40) title = extracted;
+  }
+  if (!title) title = slug;
   const text = `${slug} ${title} ${metadata.description || ''}`;
   let category = '综合工具';
   if (/douyin|抖音/i.test(text)) category = '抖音';
@@ -1589,27 +1660,53 @@ const LLM_SKILL_CATEGORIES = ['热点', '创作', '分析', '检索', '生成工
 // Skill → 灵感熔炉 source 映射（"绑定到热榜"按钮用的）
 // 仅映射已被灵感熔炉支持的 source；未映射的 skill 即使分类为热点也不会显示绑定按钮
 const SKILL_TO_SOURCE = {
-  'gzh-ai-feed':  { sourceKey: 'ai-gzh',  label: 'AI 公众号', cronId: 'hot-daily-ai-gzh' },
-  'bili-ai-feed': { sourceKey: 'ai-bili', label: 'AI B站',    cronId: 'hot-daily-ai-bili' },
-  'xhs-ai-feed':  { sourceKey: 'ai-xhs',  label: 'AI 小红书', cronId: 'hot-daily-ai-xhs' },
+  // 基础热榜（默认显示，也可在 Skill 中心解绑/重新绑定）
+  'douyin-daily-hot':     { sourceKey: 'dy',          label: '抖音 TOP50',  cronId: 'hot-daily-dy' },
+  'xiaohongshu-dailytop': { sourceKey: 'xhs',         label: '小红书 TOP50', cronId: 'hot-daily-xhs' },
+  'wechat-original-hot':  { sourceKey: 'gzh',         label: '公众号热门',  cronId: 'hot-daily-gzh' },
+  // AI 信息源（绑定后才显示对应 tab）
+  'gzh-ai-feed':          { sourceKey: 'ai-gzh',      label: 'AI 公众号',   cronId: 'hot-daily-ai-gzh' },
+  'bili-ai-feed':         { sourceKey: 'ai-bili',     label: 'AI B站',      cronId: 'hot-daily-ai-bili' },
+  'xiaohongshu-ai-feed':  { sourceKey: 'ai-xhs',      label: 'AI 小红书',   cronId: 'hot-daily-ai-xhs' },
+  'douyin-ai-feed':       { sourceKey: 'ai-dy',       label: 'AI 抖音',     cronId: 'hot-daily-ai-dy' },
+  'ks-ai-feed':           { sourceKey: 'ai-ks',       label: 'AI 快手',     cronId: 'hot-daily-ai-ks' },
+  'wechat-channels-ai-feed': { sourceKey: 'ai-sph',   label: 'AI 视频号',   cronId: 'hot-daily-ai-sph' },
+  // 短剧信息源
+  'playlet-douyin-feed':  { sourceKey: 'playlet-dy',  label: '短剧抖音',    cronId: 'hot-daily-playlet-dy' },
+  'playlet-wechat-feed':  { sourceKey: 'playlet-gzh', label: '短剧公众号',  cronId: 'hot-daily-playlet-gzh' },
 };
 
 function getSkillSourceBinding(slug) {
   return SKILL_TO_SOURCE[slug] || null;
 }
 
-// 把 skill 绑定到热榜：启用 cron + 重新调度
 function bindSkillToSource(slug) {
   const binding = getSkillSourceBinding(slug);
   if (!binding) throw new Error(`Skill ${slug} 暂未配置绑定映射`);
-  const cronRow = db.prepare('SELECT id, enabled, cron_expr, task_type, task_config FROM crontab WHERE id = ?').get(binding.cronId);
-  if (!cronRow) throw new Error(`找不到内置任务 ${binding.cronId}`);
-  const alreadyEnabled = Boolean(cronRow.enabled);
-  if (!alreadyEnabled) {
-    db.prepare('UPDATE crontab SET enabled = 1 WHERE id = ?').run(binding.cronId);
-    scheduleCronJob(binding.cronId, cronRow.cron_expr, cronRow.task_type, parseJson(cronRow.task_config) || {});
+  const cfg = HOT_SOURCE_CONFIG[binding.sourceKey];
+  if (!cfg) throw new Error(`找不到热榜配置 ${binding.sourceKey}`);
+  const cronRow = db.prepare('SELECT id, enabled FROM crontab WHERE id = ?').get(binding.cronId);
+  if (cronRow) {
+    // 已存在则解绑：删除 cron 记录并清除定时器
+    db.prepare('DELETE FROM crontab WHERE id = ?').run(binding.cronId);
+    const timer = cronTimers.get(binding.cronId);
+    if (timer) { clearTimeout(timer); cronTimers.delete(binding.cronId); }
+    return { sourceKey: binding.sourceKey, cronId: binding.cronId, enabled: false, wasEnabled: Boolean(cronRow.enabled) };
   }
-  return { sourceKey: binding.sourceKey, cronId: binding.cronId, alreadyEnabled };
+  // 绑定：根据 HOT_SOURCE_CONFIG 动态创建 cron 并启用
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO crontab (id, name, cron_expr, enabled, task_type, task_config, notify_on_failure, notify_on_success, created_at)
+    VALUES (?, ?, ?, 1, 'hot-platform', ?, 1, 0, ?)
+  `).run(
+    binding.cronId,
+    cfg.label,
+    cfg.cronExpr,
+    JSON.stringify({ platform: binding.sourceKey }),
+    now,
+  );
+  scheduleCronJob(binding.cronId, cfg.cronExpr, 'hot-platform', { platform: binding.sourceKey });
+  return { sourceKey: binding.sourceKey, cronId: binding.cronId, enabled: true, wasEnabled: false };
 }
 
 async function classifySkill(skill) {
@@ -1628,7 +1725,9 @@ async function classifySkill(skill) {
 - 检索：搜索关键词/账号/文章的工具
 - 生成工具：生成图片/视频/封面等媒体内容的工具
 
-严格只输出一个类别名称（不要其他内容）。`,
+重要约束：
+1. 必须且只能从以上五类中选择一个，禁止输出平台名（如抖音、小红书、公众号、B站）或其他任何类别名称。
+2. 严格只输出一个类别名称，不要解释、不要 reasoning、不要 Markdown。`,
     },
     {
       role: 'user',
@@ -1636,9 +1735,19 @@ async function classifySkill(skill) {
     },
   ];
   try {
-    const result = await callLlm(messages, { temperature: 0, maxTokens: 20 });
+    const result = await callLlm(messages, { temperature: 0, maxTokens: 1024 });
     const cleaned = String(result || '').trim().split(/[\n，,。]/)[0];
-    if (LLM_SKILL_CATEGORIES.includes(cleaned)) {
+    // 容错：如果模型输出平台名或不在五类中，尝试从输出里匹配最接近的类别
+    let category = LLM_SKILL_CATEGORIES.includes(cleaned) ? cleaned : null;
+    if (!category) {
+      for (const candidate of LLM_SKILL_CATEGORIES) {
+        if (cleaned.includes(candidate)) {
+          category = candidate;
+          break;
+        }
+      }
+    }
+    if (category) {
       const now = Date.now();
       db.prepare(`
         INSERT INTO skill_classifications (slug, llm_category, original_category, analyzed_at, skill_signature)
@@ -1648,9 +1757,10 @@ async function classifySkill(skill) {
           original_category = excluded.original_category,
           analyzed_at = excluded.analyzed_at,
           skill_signature = excluded.skill_signature
-      `).run(skill.slug, cleaned, skill.category, now, signature);
-      return cleaned;
+      `).run(skill.slug, category, skill.category, now, signature);
+      return category;
     }
+    console.warn(`[skill] LLM 输出不在五类中 ${skill.slug}: ${cleaned}`);
   } catch (e) {
     console.warn(`[skill] 分类失败 ${skill.slug}:`, e.message);
   }
@@ -1828,6 +1938,25 @@ async function updateCommunitySkills() {
         newSlugs: status.addedSlugs,
         newUntil: updatedAt + SKILLS_NEW_BADGE_MS,
       });
+      // 落库后自动对新/变更的 skill 进行 LLM 分类（已有缓存的会跳过）
+      try {
+        const currentSkills = listSkills();
+        const targets = status.addedSlugs.length
+          ? currentSkills.filter(skill => status.addedSlugs.includes(skill.slug))
+          : currentSkills;
+        let classified = 0;
+        for (const skill of targets) {
+          try {
+            await classifySkill(skill);
+            classified++;
+          } catch (e) {
+            console.warn(`[skill] 落库自动分类失败 ${skill.slug}:`, e.message);
+          }
+        }
+        console.log(`[skill] 落库自动分类完成：${classified}/${targets.length}`);
+      } catch (e) {
+        console.warn('[skill] 落库自动分类异常:', e.message);
+      }
       const result = {
         ...status,
         updated: true,
@@ -2379,12 +2508,12 @@ function normalizeSnapshotItems(platform, data) {
       raw: item,
     }));
   }
-  if (['ai-gzh', 'ai-bili', 'ai-xhs'].includes(platform)) {
+  if (AI_FEED_PLATFORMS.includes(platform)) {
     const list = Array.isArray(data) ? data : data?.list || [];
     return list.map(item => ({
       key: String(item.photoId || item.id || item.title),
       title: item.title || '(无标题)',
-      score: platform === 'ai-gzh'
+      score: platform === 'ai-gzh' || platform === 'playlet-gzh'
         ? toNumber(item.readCount) || 0
         : (toNumber(item.likeCount) || 0)
           + (toNumber(item.shareCount) || 0)
@@ -2606,7 +2735,7 @@ function normalizeDailyPlatformItems(platform, data, dataDate) {
       raw: item,
     }));
   }
-  if (['ai-gzh', 'ai-bili', 'ai-xhs'].includes(platform)) {
+  if (AI_FEED_PLATFORMS.includes(platform)) {
     items = items.filter(item => {
       const rawDate = item.raw?.gmtCreate || item.raw?.publishTime || item.raw?.publicTime || '';
       return String(rawDate).startsWith(dataDate);
@@ -2614,6 +2743,109 @@ function normalizeDailyPlatformItems(platform, data, dataDate) {
   }
   return items.slice(0, 50);
 }
+
+// 热榜 source 配置：platform key -> API、渲染、cron 配置
+const HOT_SOURCE_CONFIG = {
+  dy: {
+    label: '抖音 TOP50',
+    endpoint: 'dy/search/likesRank',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source, type: '全部', startTime: dataDate, endTime: dataDate }),
+    adapter: 'dy',
+    cronExpr: '0 12 * * *',
+    dateField: 'publishTime',
+  },
+  xhs: {
+    label: '小红书 TOP50',
+    endpoint: 'cozeSkill/getXhsCozeSkillDataOne',
+    method: 'redfoxGetData',
+    buildRequest: (dataDate, source) => ({ rankDate: dataDate, source: '小红书单日数据爆款文章-GitHub', category: '综合全部' }),
+    adapter: 'xhs',
+    cronExpr: '0 12,20 * * *',
+    dateField: 'workPublishTime',
+  },
+  gzh: {
+    label: '公众号热门',
+    endpoint: 'gzh/search/hotArticle',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source, keyword: '', startDate: dataDate, endDate: dataDate, pageNum: 1, pageSize: 50 }),
+    adapter: 'gzh',
+    cronExpr: '0 12 * * *',
+    dateField: 'publicTime',
+  },
+  'ai-gzh': {
+    label: 'AI 公众号',
+    endpoint: 'parseWork/queryAiMsgs',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: 'AI公众号信息源-GitHub', keyword: 'AI', pageNum: 1, pageSize: 100, startDate: dataDate, endDate: dataDate }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+  'ai-bili': {
+    label: 'AI B站',
+    endpoint: 'parseWork/queryBiliAiMsgs',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: 'B站AI信息源-GitHub', keyword: 'AI', pageNum: 1, pageSize: 100, startTime: `${dataDate} 00:00:00`, endTime: `${dataDate} 23:59:59` }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+  'ai-xhs': {
+    label: 'AI 小红书',
+    endpoint: 'parseWork/queryXhsAiMsgs',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: 'AI小红书信息源-GitHub', keyword: 'AI', pageNum: 1, pageSize: 100, startTime: dataDate, endTime: dateFromYmd(dataDate, 1) }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+  'ai-dy': {
+    label: 'AI 抖音',
+    endpoint: 'parseWork/queryDyAiMsgs',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: 'AI抖音信息源-GitHub', keyword: 'AI', pageNum: 1, pageSize: 100, startTime: `${dataDate} 00:00:00`, endTime: `${dataDate} 23:59:59` }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+  'ai-ks': {
+    label: 'AI 快手',
+    endpoint: 'parseWork/queryKsAiMsgs/batch',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: 'AI快手信息源-GitHub', keywords: ['AI'], pageNum: 1, pageSize: 200, startTime: `${dataDate} 00:00:00`, endTime: `${dataDate} 23:59:59` }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+  'ai-sph': {
+    label: 'AI 视频号',
+    endpoint: 'parseWork/querySphAiMsgs',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: 'AI视频号信息源-GitHub', keyword: 'AI', pageNum: 1, pageSize: 100, startTime: `${dataDate} 00:00:00`, endTime: `${dataDate} 23:59:59` }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+  'playlet-dy': {
+    label: '短剧抖音',
+    endpoint: 'parseWork/queryPlayletMsgs',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: '短剧抖音信息源-GitHub', msgType: '短剧', platform: 1, pageNum: 1, pageSize: 100, startTime: `${dataDate} 00:00:00`, endTime: `${dataDate} 23:59:59` }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+  'playlet-gzh': {
+    label: '短剧公众号',
+    endpoint: 'parseWork/queryPlayletMsgs',
+    method: 'redfoxData',
+    buildRequest: (dataDate, source) => ({ source: '短剧公众号信息源-GitHub', msgType: '短剧', platform: 2, pageNum: 1, pageSize: 100, startTime: `${dataDate} 00:00:00`, endTime: `${dataDate} 23:59:59` }),
+    adapter: 'aiFeed',
+    cronExpr: '0 12 * * *',
+    dateField: 'gmtCreate',
+  },
+};
 
 function latestAiGzhDataDate(data, expectedDate) {
   const list = Array.isArray(data) ? data : data?.list || data?.records || data?.articles || [];
@@ -2672,50 +2904,16 @@ async function syncDailyPlatform(platform, dataDate = dateDaysAgo(1), source = '
     let endpoint;
     let request;
     try {
-      let response;
-      if (platform === 'dy') {
-        endpoint = 'dy/search/likesRank';
-        request = { source, type: '全部', startTime: dataDate, endTime: dataDate };
-        response = await redfoxData(endpoint, request);
-      } else if (platform === 'xhs') {
-        endpoint = 'cozeSkill/getXhsCozeSkillDataOne';
-        request = { rankDate: dataDate, source: '小红书单日数据爆款文章-GitHub', category: '综合全部' };
-        response = await redfoxGetData(endpoint, request);
-      } else if (platform === 'gzh') {
-        endpoint = 'gzh/search/hotArticle';
-        request = { source, keyword: '', startDate: dataDate, endDate: dataDate, pageNum: 1, pageSize: 50 };
-        response = await redfoxData(endpoint, request);
-      } else if (platform === 'ai-gzh') {
-        endpoint = 'parseWork/queryAiMsgs';
-        request = { source: 'AI公众号信息源-GitHub', keyword: 'AI', pageNum: 1, pageSize: 100, startDate: dataDate, endDate: dataDate };
-        response = await redfoxData(endpoint, request);
-      } else if (platform === 'ai-bili') {
-        endpoint = 'parseWork/queryBiliAiMsgs';
-        request = {
-          source: 'B站AI信息源-GitHub',
-          keyword: 'AI',
-          pageNum: 1,
-          pageSize: 100,
-          startTime: `${dataDate} 00:00:00`,
-          endTime: `${dataDate} 23:59:59`,
-        };
-        response = await redfoxData(endpoint, request);
-      } else if (platform === 'ai-xhs') {
-        endpoint = 'parseWork/queryXhsAiMsgs';
-        request = {
-          source: 'AI小红书信息源-GitHub',
-          keyword: 'AI',
-          pageNum: 1,
-          pageSize: 100,
-          startTime: dataDate,
-          endTime: dateFromYmd(dataDate, 1),
-        };
-        response = await redfoxData(endpoint, request);
-      } else {
-        throw new Error(`不支持的平台：${platform}`);
-      }
+      const config = HOT_SOURCE_CONFIG[platform];
+      if (!config) throw new Error(`不支持的平台：${platform}`);
+      endpoint = config.endpoint;
+      request = config.buildRequest(dataDate, source);
+      const response = config.method === 'redfoxGetData'
+        ? await redfoxGetData(endpoint, request)
+        : await redfoxData(endpoint, request);
       const items = normalizeDailyPlatformItems(platform, response, dataDate);
-      if (['ai-gzh', 'ai-bili', 'ai-xhs'].includes(platform) && !items.length) {
+      const aiFeedPlatforms = Object.keys(HOT_SOURCE_CONFIG).filter(k => HOT_SOURCE_CONFIG[k].adapter === 'aiFeed');
+      if (aiFeedPlatforms.includes(platform) && !items.length) {
         const actualDate = latestAiGzhDataDate(response, dataDate);
         const fallbackItems = actualDate && actualDate !== dataDate
           ? normalizeDailyPlatformItems(platform, response, actualDate)
@@ -2793,7 +2991,14 @@ async function syncDailyPlatform(platform, dataDate = dateDaysAgo(1), source = '
 async function captureHotSnapshot() {
   const dataDate = dateDaysAgo(1);
   const platforms = [];
-  for (const platform of ['dy', 'xhs', 'gzh', 'ai-gzh', 'ai-bili', 'ai-xhs']) {
+  // 只同步当前已创建 cron 的 platform（即 tab 栏中显示的）
+  const rows = db.prepare("SELECT task_config FROM crontab WHERE task_type = 'hot-platform'").all();
+  const platformKeys = [...new Set(rows.map(row => {
+    const cfg = parseJson(row.task_config) || {};
+    return cfg.platform;
+  }).filter(Boolean))];
+  for (const platform of platformKeys) {
+    if (!HOT_SOURCE_CONFIG[platform]) continue;
     try {
       const batch = await syncDailyPlatform(platform, dataDate, '灵感熔炉-手动昨日榜');
       platforms.push({ platform, count: batch.itemCount, ok: true });
@@ -5236,18 +5441,16 @@ async function refreshTrackedAccounts() {
     try {
       const synced = await syncTracker(tracker.id, {
         automatic: true,
-        includeSourceData: tracker.group === '自己' && tracker.plat === 'xhs',
+        includeSourceData: tracker.plat === 'xhs',
       });
       result.synced += 1;
       result.apiCalls += 1;
-      if (tracker.group === '自己') {
-        await diagnoseAndStoreTracker(listTrackers().find(item => item.id === tracker.id) || tracker, {
-          snapshotDate: dateDaysAgo(1),
-          sourceData: tracker.plat === 'xhs' ? synced._sourceData : null,
-        });
-        result.diagnosed += 1;
-        if (tracker.plat !== 'xhs') result.apiCalls += 1;
-      }
+      await diagnoseAndStoreTracker(listTrackers().find(item => item.id === tracker.id) || tracker, {
+        snapshotDate: dateDaysAgo(1),
+        sourceData: tracker.plat === 'xhs' ? synced._sourceData : null,
+      });
+      result.diagnosed += 1;
+      if (tracker.plat !== 'xhs') result.apiCalls += 1;
     } catch (error) {
       result.failed.push({ id: tracker.id, name: tracker.name, error: error.message });
     }
@@ -5572,7 +5775,7 @@ async function handleLocalApi(req, res, url) {
   }
   if (url.pathname === '/api/_/hot/list' && req.method === 'GET') {
     const platform = url.searchParams.get('platform') || 'dy';
-    if (!['dy', 'xhs', 'gzh', 'ai-gzh', 'ai-bili', 'ai-xhs'].includes(platform)) {
+    if (!HOT_SOURCE_CONFIG[platform]) {
       json(res, 400, { ok: false, error: '不支持的平台' });
       return true;
     }
@@ -5586,12 +5789,29 @@ async function handleLocalApi(req, res, url) {
       json(res, 200, { ok: true, ...hotListPayload('all') });
       return true;
     }
-    if (!['dy', 'xhs', 'gzh', 'ai-gzh', 'ai-bili', 'ai-xhs'].includes(platform)) {
+    if (!HOT_SOURCE_CONFIG[platform]) {
       json(res, 400, { ok: false, error: '不支持的平台' });
       return true;
     }
     await syncDailyPlatform(platform, dateDaysAgo(1), '灵感熔炉-手动昨日榜');
     json(res, 200, { ok: true, ...hotListPayload(platform) });
+    return true;
+  }
+  // 返回热榜可用 platform 列表（只返回已启用 cron 的，供前端动态渲染 tab）
+  if (url.pathname === '/api/_/hot/platforms' && req.method === 'GET') {
+    const enabledRows = db.prepare("SELECT id, task_config FROM crontab WHERE enabled = 1 AND task_type = 'hot-platform'").all();
+    const enabledPlatforms = new Set(
+      enabledRows.map(row => {
+        const cfg = parseJson(row.task_config) || {};
+        return cfg.platform;
+      }).filter(Boolean)
+    );
+    const platforms = Object.entries(HOT_SOURCE_CONFIG)
+      .filter(([key]) => enabledPlatforms.has(key))
+      .map(([key, cfg]) => ({
+        key, label: cfg.label, adapter: cfg.adapter, cronId: `hot-daily-${key}`,
+      }));
+    json(res, 200, { ok: true, data: platforms });
     return true;
   }
   if (url.pathname === '/api/_/inspiration-sources' && req.method === 'GET') {
@@ -6550,11 +6770,12 @@ ${keywordsList}
   if (cronDelMatch && req.method === 'DELETE') {
     const id = decodeURIComponent(cronDelMatch[1]);
     if (isInspirationCronId(id)) { json(res, 400, { ok: false, error: '自动选题调度由灵感库页面管理' }); return true; }
+    // 系统固定任务不允许在 cron 列表删除（热榜 tab 与 cron 一一对应，可在 tab/Skill 中心解绑删除）
     if ([
-      'hot-realtime', 'hot-daily-dy', 'hot-daily-xhs', 'hot-daily-gzh',
-      'hot-daily-ai-gzh', 'hot-daily-ai-bili', 'hot-daily-ai-xhs',
-      'hot-trend-analysis', 'hot-daily-report', 'cache-clean', 'usage-clean', 'wersss-sync',
-    ].includes(id)) { json(res, 400, { ok: false, error: '内置任务不能删除' }); return true; }
+      'cache-clean', 'usage-clean',
+      'hot-realtime', 'hot-trend-analysis', 'hot-daily-report',
+      'tracked-account-daily', 'wersss-sync',
+    ].includes(id)) { json(res, 400, { ok: false, error: '系统固定任务不能删除' }); return true; }
     try { json(res, 200, { ok: true, data: deleteCronJob(id) }); }
     catch (e) { json(res, 500, { ok: false, error: e.message }); }
     return true;
@@ -6568,6 +6789,20 @@ ${keywordsList}
       await runCronJob(id, job.task_type, parseJson(job.task_config) || {});
       db.prepare('UPDATE crontab SET last_run = ? WHERE id = ?').run(Date.now(), id);
       json(res, 200, { ok: true });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+  if (url.pathname === '/api/_/crons/reorder' && req.method === 'POST') {
+    const { data } = await readBody(req);
+    const ids = Array.isArray(data.ids) ? data.ids.map(String) : [];
+    if (!ids.length) { json(res, 400, { ok: false, error: '缺少排序 ID 列表' }); return true; }
+    try {
+      const update = db.prepare('UPDATE crontab SET sort_order = ? WHERE id = ?');
+      const reorderTx = db.transaction((idList) => {
+        idList.forEach((id, idx) => update.run((idx + 1) * 10, id));
+      });
+      reorderTx(ids);
+      json(res, 200, { ok: true, data: listCronJobs() });
     } catch (e) { json(res, 500, { ok: false, error: e.message }); }
     return true;
   }
@@ -6882,14 +7117,14 @@ function loadAllCronJobs() {
 }
 
 function listCronJobs() {
-  return db.prepare('SELECT id, name, cron_expr, enabled, task_type, task_config, notify_on_failure, notify_on_success, last_run, created_at FROM crontab ORDER BY created_at ASC').all()
+  return db.prepare('SELECT id, name, cron_expr, enabled, task_type, task_config, notify_on_failure, notify_on_success, last_run, sort_order, created_at FROM crontab ORDER BY sort_order ASC, created_at ASC').all()
     .filter(row => !isInspirationCronId(row.id))
     .map(row => ({
       id: row.id, name: row.name, cronExpr: row.cron_expr, enabled: Boolean(row.enabled),
       taskType: row.task_type, taskConfig: row.task_config ? JSON.parse(row.task_config) : null,
       notifyOnFailure: row.notify_on_failure !== 0,
       notifyOnSuccess: Boolean(row.notify_on_success),
-      lastRun: row.last_run, createdAt: row.created_at,
+      lastRun: row.last_run, sortOrder: row.sort_order, createdAt: row.created_at,
     }));
 }
 
@@ -6898,13 +7133,20 @@ async function saveCronJob(id, name, cronExpr, enabled, taskType, taskConfig, op
   const config = taskConfig ? JSON.stringify(taskConfig) : null;
   const notifyFailure = opts.notifyOnFailure === false ? 0 : 1;
   const notifySuccess = opts.notifyOnSuccess ? 1 : 0;
-  db.prepare(`INSERT INTO crontab (id, name, cron_expr, enabled, task_type, task_config, notify_on_failure, notify_on_success, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const existing = db.prepare('SELECT sort_order FROM crontab WHERE id = ?').get(id);
+  let sortOrder = existing ? existing.sort_order : 0;
+  if (!existing) {
+    const maxRow = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM crontab').get();
+    sortOrder = (maxRow?.max_order || 0) + 1;
+  }
+  db.prepare(`INSERT INTO crontab (id, name, cron_expr, enabled, task_type, task_config, notify_on_failure, notify_on_success, sort_order, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name=excluded.name, cron_expr=excluded.cron_expr, enabled=excluded.enabled,
       task_type=excluded.task_type, task_config=excluded.task_config,
-      notify_on_failure=excluded.notify_on_failure, notify_on_success=excluded.notify_on_success`
-  ).run(id, name, cronExpr, enabled ?1 : 0, taskType, config, notifyFailure, notifySuccess, now);
+      notify_on_failure=excluded.notify_on_failure, notify_on_success=excluded.notify_on_success,
+      sort_order=excluded.sort_order`
+  ).run(id, name, cronExpr, enabled ?1 : 0, taskType, config, notifyFailure, notifySuccess, sortOrder, now);
   if (enabled) scheduleCronJob(id, cronExpr, taskType, taskConfig || {});
   else {
     const t = cronTimers.get(id);

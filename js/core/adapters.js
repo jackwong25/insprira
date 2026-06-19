@@ -132,3 +132,48 @@ export function adaptAIXHS(item) {
     isVideo: false,
   };
 }
+
+export function adaptAiFeed(item, platform) {
+  const platMap = {
+    'ai-gzh': 'gzh',
+    'ai-bili': 'bz',
+    'ai-xhs': 'xhs',
+    'ai-dy': 'dy',
+    'ai-ks': 'ks',
+    'ai-sph': 'sph',
+    'playlet-dy': 'dy',
+    'playlet-gzh': 'gzh',
+  };
+  const plat = platMap[platform] || platform;
+  const isGzhFamily = plat === 'gzh';
+  const urlMap = {
+    'ai-bili': item.photoId ? `https://www.bilibili.com/video/${item.photoId}` : '',
+    'ai-xhs': item.photoId ? `https://www.xiaohongshu.com/explore/${item.photoId}` : '',
+    'ai-dy': item.photoId ? `https://www.douyin.com/video/${item.photoId}` : '',
+    'ai-ks': item.photoId ? `https://www.kuaishou.com/short-video/${item.photoId}` : '',
+    'ai-sph': item.url || '',
+    'playlet-dy': item.photoId ? `https://www.douyin.com/video/${item.photoId}` : '',
+    'playlet-gzh': item.url || '',
+  };
+  return {
+    plat,
+    sourcePlat: platform,
+    workId: item.photoId || item.id,
+    title: item.title,
+    desc: [item.type, item.topic].filter(Boolean).join(' · '),
+    cover: item.coverUrl,
+    author: item.userName,
+    authorId: item.authorId,
+    authorAvatar: item.userHeadUrl,
+    read: isGzhFamily ? fmt(item.readCount) : undefined,
+    like: fmt(item.likeCount),
+    comment: fmt(item.commentCount),
+    share: fmt(item.shareCount),
+    collect: fmt(item.collectCount),
+    play: plat === 'bz' ? fmt(item.playCount ?? item.viewCount) : undefined,
+    url: urlMap[platform] || item.url || '',
+    publicTime: item.gmtCreate || item.publishTime,
+    createTime: item.gmtCreate || item.publishTime,
+    isVideo: ['dy', 'bz', 'ks', 'sph'].includes(plat),
+  };
+}
