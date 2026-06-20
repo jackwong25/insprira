@@ -3906,8 +3906,8 @@ const FIXED_INSPIRATION_SOURCE_META = [
   { key: 'wersss', label: 'WeRss（we-mp-rss）', category: 'local', description: '本地同步的 we-mp-rss 公众号文章' },
 ];
 
-function getEnabledHotPlatforms() {
-  const rows = db.prepare("SELECT task_config FROM crontab WHERE enabled = 1 AND task_type = 'hot-platform'").all();
+function getConfiguredHotPlatforms() {
+  const rows = db.prepare("SELECT task_config FROM crontab WHERE task_type = 'hot-platform'").all();
   return new Set(
     rows.map(row => {
       const cfg = parseJson(row.task_config) || {};
@@ -3917,9 +3917,9 @@ function getEnabledHotPlatforms() {
 }
 
 function getDynamicInspirationSources() {
-  const enabledPlatforms = getEnabledHotPlatforms();
+  const configuredPlatforms = getConfiguredHotPlatforms();
   return Object.entries(HOT_SOURCE_CONFIG)
-    .filter(([key]) => enabledPlatforms.has(key))
+    .filter(([key]) => configuredPlatforms.has(key))
     .map(([key, cfg]) => ({
       key,
       label: cfg.label,
@@ -5822,15 +5822,15 @@ async function handleLocalApi(req, res, url) {
   }
   // 返回热榜可用 platform 列表（只返回已启用 cron 的，供前端动态渲染 tab）
   if (url.pathname === '/api/_/hot/platforms' && req.method === 'GET') {
-    const enabledRows = db.prepare("SELECT id, task_config FROM crontab WHERE enabled = 1 AND task_type = 'hot-platform'").all();
-    const enabledPlatforms = new Set(
-      enabledRows.map(row => {
+    const configuredRows = db.prepare("SELECT id, task_config FROM crontab WHERE task_type = 'hot-platform'").all();
+    const configuredPlatforms = new Set(
+      configuredRows.map(row => {
         const cfg = parseJson(row.task_config) || {};
         return cfg.platform;
       }).filter(Boolean)
     );
     const platforms = Object.entries(HOT_SOURCE_CONFIG)
-      .filter(([key]) => enabledPlatforms.has(key))
+      .filter(([key]) => configuredPlatforms.has(key))
       .map(([key, cfg]) => ({
         key, label: cfg.label, adapter: cfg.adapter, cronId: `hot-daily-${key}`,
       }));
