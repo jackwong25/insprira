@@ -289,6 +289,7 @@ export async function doRewrite() {
         text,
         platform: document.getElementById('rewritePlatform').value,
         tone: document.getElementById('rewriteTone').value,
+        length: document.getElementById('rewriteLength')?.value || 'standard',
         hotspot: selectedRewriteHotspot,
         styleProfile,
         mode: currentCreatorMode,

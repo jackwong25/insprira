@@ -3813,6 +3813,18 @@ async function rewriteForPlatform(body) {
   const platform = String(body.platform || '小红书');
   const tone = String(body.tone || '专业、清晰、有观点');
   const mode = String(body.mode || 'rewrite');  // create / rewrite / adapt
+  const length = String(body.length || 'standard');  // concise / standard / detailed
+  const PLATFORM_LENGTH_MAP = {
+    '公众号': { concise: '正文约500字',  standard: '正文约1200字', detailed: '正文约2500字' },
+    '知乎':   { concise: '正文约500字',  standard: '正文约1500字', detailed: '正文约3000字' },
+    '小红书': { concise: '正文约100字',  standard: '正文约300字',  detailed: '正文约600字' },
+    '抖音':   { concise: '正文约50字',   standard: '正文约150字',  detailed: '正文约300字' },
+    '视频号': { concise: '正文约80字',   standard: '正文约200字',  detailed: '正文约400字' },
+    '快手':   { concise: '正文约80字',   standard: '正文约200字',  detailed: '正文约400字' },
+    '哔站':   { concise: '正文约300字',  standard: '正文约800字',  detailed: '正文约1500字' },
+  };
+  const platformLengths = PLATFORM_LENGTH_MAP[platform] || PLATFORM_LENGTH_MAP['公众号'];
+  const lengthInstruction = platformLengths[length] || platformLengths.standard;
   const hotspot = body.hotspot && typeof body.hotspot === 'object' ? {
     title: String(body.hotspot.title || '').slice(0, 200),
     platformName: String(body.hotspot.platformName || '').slice(0, 30),
@@ -3860,7 +3872,7 @@ async function rewriteForPlatform(body) {
   const result = await callLlmJson([
     {
       role: 'system',
-      content: `你是中文自媒体编辑。${modeInstruction}风格：${tone}。只能改写原始素材和所选热点明确提供的信息，不得补充原文没有的功能细节、原因、监管结论、时间表、数据或品牌案例；素材较短时正文也应保持简短。热点只用于标题和前言的自然切入，不能借热点编造正文事实。输出严格 JSON：{"title":"","intro":"","content":""}。title 是成稿标题，intro 是独立前言，content 是不重复标题和前言的正文。${skillInstruction}${styleInstruction}`,
+      content: `你是中文自媒体编辑。${modeInstruction}风格：${tone}。${mode === 'create' ? '给定主题后进行充分扩展创作，${lengthInstruction}，可以基于常识适度扩展但不得编造具体数据、日期或事件。' : '只能改写原始素材和所选热点明确提供的信息，不得补充原文没有的功能细节、原因、监管结论、时间表、数据或品牌案例；素材较短时正文也应保持简短。'}热点只用于标题和前言的自然切入，不能借热点编造正文事实。输出严格 JSON：{"title":"","intro":"","content":""}。title 是成稿标题，intro 是独立前言，content 是不重复标题和前言的正文。${skillInstruction}${styleInstruction}`,
     },
     {
       role: 'user',
