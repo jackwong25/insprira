@@ -9,6 +9,7 @@ import { initIcons } from '../icons.js';
 let rewriteHotspots = [];
 let selectedRewriteHotspot = null;
 let currentCreatorMode = 'rewrite';  // create / rewrite / adapt
+let draftEditId = null;  // 从草稿箱加载的草稿 ID，保存时更新而非新建
 const MODE_META = {
   create:  { label: '开始创作', hint: '创作模式：基于主题/大纲从零写，可适当发挥但遵守事实底线' },
   rewrite: { label: '开始重构', hint: '重构模式：在原素材基础上扩展结构和打磨，保留事实' },
@@ -33,6 +34,27 @@ function bindPlatformSkillBadge() {
   };
   sel.addEventListener('change', update);
   update();
+}
+
+export function setCreatorMode(mode) {
+  if (!MODE_META[mode]) return;
+  currentCreatorMode = mode;
+  document.querySelectorAll('.creator-mode-tab').forEach(b => {
+    const active = b.dataset.mode === mode;
+    b.classList.toggle('bg-purple-500/20', active);
+    b.classList.toggle('text-purple-300', active);
+    b.classList.toggle('text-gray-400', !active);
+  });
+  const hint = document.getElementById('creator-mode-hint');
+  if (hint) hint.textContent = MODE_META[mode]?.hint || '';
+  const label = document.getElementById('doRewriteLabel');
+  if (label) label.textContent = MODE_META[mode]?.label || '开始';
+  const ph = document.getElementById('creatorInput');
+  if (ph) ph.placeholder = mode === 'create'
+    ? '输入主题/大纲/关键词，AI 会基于此创作全新内容...'
+    : mode === 'adapt'
+      ? '粘贴要换风格的原文，AI 直接改写不补充事实...'
+      : '粘贴一段爆款文案，或输入一个选题关键词...';
 }
 
 function bindCreatorModeTabs() {
@@ -83,10 +105,49 @@ export function renderCreator() {
   } else {
     sourceEl.classList.add('hidden');
   }
+  // 从草稿箱加载：把已生成的文章放进素材框，方便继续编辑
+  const draft = LS.get('draftToLoad', null);
+  if (draft) {
+    LS.remove('draftToLoad');
+    const fullText = [draft.generated_title, draft.generated_intro, draft.generated_content].filter(Boolean).join('\n\n');
+    document.getElementById('creatorInput').value = fullText || draft.source_text || '';
+    document.getElementById('rewriteTitle').value = draft.generated_title || '';
+    document.getElementById('rewriteIntro').value = '';
+    document.getElementById('rewriteResult').value = '';
+    if (draft.platform) document.getElementById('rewritePlatform').value = draft.platform;
+    if (draft.tone) document.getElementById('rewriteTone').value = draft.tone;
+    if (draft.length) document.getElementById('rewriteLength').value = draft.length;
+    draftEditId = draft.draftId || null;
+    setCreatorMode('rewrite');
+  }
   initIcons(document.getElementById('content-area'));
   loadStyleProfiles();
   bindCreatorModeTabs();
   bindPlatformSkillBadge();
+}
+
+export async function saveToDrafts() {
+  const title = document.getElementById('rewriteTitle')?.value?.trim() || '';
+  const input = document.getElementById('creatorInput')?.value?.trim() || '';
+  const result = document.getElementById('rewriteResult')?.value?.trim() || '';
+  if (!title && !input && !result) { toast('没有可保存的内容', 'error'); return; }
+  const data = {
+    id: draftEditId || undefined,
+    title,
+    source_text: input,
+    generated_title: title,
+    generated_intro: document.getElementById('rewriteIntro')?.value?.trim() || '',
+    generated_content: result,
+    platform: document.getElementById('rewritePlatform')?.value || '公众号',
+    mode: currentCreatorMode,
+    tone: document.getElementById('rewriteTone')?.value || '',
+    length: document.getElementById('rewriteLength')?.value || 'standard',
+  };
+  try {
+    await localApi('drafts', { method: 'POST', body: data });
+    draftEditId = null;
+    toast('已保存到草稿箱', 'success');
+  } catch (e) { toast('保存失败：' + e.message, 'error'); }
 }
 
 async function loadStyleProfiles() {
@@ -280,7 +341,7 @@ export async function doRewrite() {
   if (!text) { toast('请先输入素材', 'error'); return; }
   document.getElementById('rewriteTitle').value = '正在生成标题…';
   document.getElementById('rewriteIntro').value = '正在生成前言…';
-  resultEl.value = '正在调用 LLM 重构内容…';
+  resultEl.value = `正在调用 LLM ${MODE_META[currentCreatorMode]?.label?.replace('开始','') || '生成'}内容…`;
   try {
     const styleProfile = await getSelectedStyleProfile();
     const result = await localApi('rewrite', {

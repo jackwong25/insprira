@@ -50,6 +50,9 @@ export async function openEnvModal() {
       ['LLM_BASE_URL','LLM Base URL','text'],
       ['LLM_API_KEY','LLM API Key','password'],
       ['LLM_MODEL','LLM 模型','text'],
+      ['PERSONAL_LLM_API_KEY','个人 LLM API Key','password','填写后使用你自己的 LLM Key，不填则使用上方系统 Key。'],
+      ['PERSONAL_LLM_BASE_URL','个人 LLM Base URL','text'],
+      ['PERSONAL_LLM_MODEL','个人 LLM 模型','text'],
       ['KB_ENCRYPTION_KEY','知识库加密密钥','password','用于加密 Notion 凭证。已有数据请勿随意修改。'],
       ['ENABLE_SCHEDULER','启用调度器','text',''],
     ];

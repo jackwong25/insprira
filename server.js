@@ -55,6 +55,7 @@ const XHS_ANALYZER_ROOT = path.join(SKILLS_ROOT, 'xiaohongshu-account-analyzer')
 const sessions = new Map();
 const EDITABLE_ENV_KEYS = [
   'REDFOX_API_KEY', 'REDFOX_WEB_COOKIE', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
+  'PERSONAL_LLM_BASE_URL', 'PERSONAL_LLM_API_KEY', 'PERSONAL_LLM_MODEL',
   'KB_ENCRYPTION_KEY', 'ENABLE_SCHEDULER',
 ];
 const DEFAULT_USERNAME = 'admin';
@@ -569,6 +570,24 @@ db.exec(`
     created_at INTEGER NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS drafts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    source_text TEXT NOT NULL DEFAULT '',
+    generated_title TEXT NOT NULL DEFAULT '',
+    generated_intro TEXT NOT NULL DEFAULT '',
+    generated_content TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '公众号',
+    mode TEXT NOT NULL DEFAULT 'rewrite',
+    tone TEXT NOT NULL DEFAULT '',
+    length TEXT NOT NULL DEFAULT 'standard',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(user_id);
+  CREATE INDEX IF NOT EXISTS idx_drafts_updated ON drafts(updated_at DESC);
 `);
 
 function ensureColumn(table, column, definition) {
@@ -3522,10 +3541,11 @@ async function fetchKeywordHotArticles(keywords, options = {}) {
 }
 
 async function callLlm(messages, options = {}) {
-  const apiKey = process.env.LLM_API_KEY;
-  const baseUrl = (process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const model = process.env.LLM_MODEL || 'gpt-4.1-mini';
-  if (!apiKey) throw new Error('未配置 LLM_API_KEY');
+  // 优先使用个人 LLM 配置（如果已设置），否则回退到系统默认
+  const apiKey = process.env.PERSONAL_LLM_API_KEY || process.env.LLM_API_KEY;
+  const baseUrl = (process.env.PERSONAL_LLM_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const model = process.env.PERSONAL_LLM_MODEL || process.env.LLM_MODEL || 'gpt-4.1-mini';
+  if (!apiKey) throw new Error('未配置 LLM_API_KEY（系统或个人至少配一个）');
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -3863,28 +3883,41 @@ async function rewriteForPlatform(body) {
     if (p['创作边界']?.length) bits.push(`避免：${p['创作边界'].join('、')}`);
     if (bits.length) styleInstruction = `\n\n参考风格档案（仅作为风格指引，不得编造新事实）：\n${bits.join('\n')}`;
   }
-  // 模式不同，system prompt 不同
+  // 模式不同，system prompt 和校对策略不同
   const modeInstruction = mode === 'create'
     ? `基于给定主题/大纲创作一篇全新的${platform}内容，可以适当发挥但要遵守事实底线。`
     : mode === 'adapt'
       ? `直接把素材改写为${platform}风格（不补充新事实，仅风格转换、句式重组）。`
       : `将素材重构为${platform}内容（在原素材基础上扩展结构和打磨）。`;
+  const rewriteRule = mode === 'create'
+    ? `给定主题后进行充分扩展创作，${lengthInstruction}，基于常识合理扩展，不得编造具体数据、日期或虚构事件。`
+    : mode === 'adapt'
+      ? '保持原文篇幅和结构，仅做风格转换和句式重组，不补充新事实也不缩减内容。'
+      : '保持原文篇幅，合理扩展结构和打磨表达，不刻意增减内容，不编造新事实。';
+  // 第一轮：内容生成
   const result = await callLlmJson([
     {
       role: 'system',
-      content: `你是中文自媒体编辑。${modeInstruction}风格：${tone}。${mode === 'create' ? '给定主题后进行充分扩展创作，${lengthInstruction}，可以基于常识适度扩展但不得编造具体数据、日期或事件。' : '只能改写原始素材和所选热点明确提供的信息，不得补充原文没有的功能细节、原因、监管结论、时间表、数据或品牌案例；素材较短时正文也应保持简短。'}热点只用于标题和前言的自然切入，不能借热点编造正文事实。输出严格 JSON：{"title":"","intro":"","content":""}。title 是成稿标题，intro 是独立前言，content 是不重复标题和前言的正文。${skillInstruction}${styleInstruction}`,
+      content: `你是中文自媒体编辑。${modeInstruction}风格：${tone}。${rewriteRule}热点只用于标题和前言的自然切入，不能借热点编造正文事实。输出严格 JSON：{\"title\":\"\",\"intro\":\"\",\"content\":\"\"}。title 是成稿标题，intro 是独立前言，content 是不重复标题和前言的正文。${skillInstruction}${styleInstruction}`,
     },
     {
       role: 'user',
       content: `${hotspotInstruction}\n\n原始素材：\n${text}`,
     },
   ]);
+  // 第二轮：根据模式执行不同深度的事实校对
+  const FACT_CHECK_PROMPTS = {
+    create: '你是事实校对编辑。检查草稿中是否存在编造的日期、虚假数据、不存在的案例、未经证实的因果推断，删除这些幻觉内容。但允许基于常识的知识扩展（百科事实、公认科学原理、公众已知信息）。尽量保持原文篇幅和结构，不要因为素材简短就大量删减。只输出 JSON {\"title\":\"\",\"intro\":\"\",\"content\":\"\"}。',
+    rewrite: '你是事实校对编辑。逐句比对原始素材，只保留能从原始素材或热点标题直接推出的内容。删除新增的原因、功能细节、时间判断、法规推测。合理的结构扩展和表达打磨可以保留，但不应引入原文没有的事实。输出 JSON {\"title\":\"\",\"intro\":\"\",\"content\":\"\"}。',
+    adapt: '你是事实校对编辑。逐句比对原始素材，不允许新增任何信息。仅保留句式重组和风格转换，原文信息量不能增减。输出 JSON {\"title\":\"\",\"intro\":\"\",\"content\":\"\"}。',
+  };
+  const factCheckPrompt = FACT_CHECK_PROMPTS[mode] || FACT_CHECK_PROMPTS.rewrite;
   let validated = result;
   try {
     validated = await callLlmJson([
       {
         role: 'system',
-        content: '你是严格的事实校对编辑。逐句检查草稿，只保留能从“原始素材”或“允许使用的热点标题”直接推出的内容。删除所有新增的原因、功能细节、时间判断、法规推测、产品示例和数据，不得用常识补全。素材信息少时允许成稿很短。保持 JSON 字段不变，只输出 {"title":"","intro":"","content":""}。',
+        content: factCheckPrompt,
       },
       {
         role: 'user',
@@ -3892,7 +3925,7 @@ async function rewriteForPlatform(body) {
       },
     ]);
   } catch (error) {
-    console.warn('重构事实校对失败，返回初稿：', error.message);
+    console.warn('事实校对失败，返回初稿：', error.message);
   }
   return {
     title: String(validated.title || '').trim(),
@@ -6839,6 +6872,56 @@ ${keywordsList}
       reorderTx(ids);
       json(res, 200, { ok: true, data: listCronJobs() });
     } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+
+  // ========== 草稿箱 ==========
+  if (url.pathname === '/api/_/drafts' && req.method === 'GET') {
+    const auth = currentSession(req);
+    if (!auth) { json(res, 401, { ok: false, error: '未登录' }); return true; }
+    try {
+      const ds = db.prepare('SELECT id, title, platform, mode, length, created_at, updated_at FROM drafts WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50').all(auth.user.id);
+      json(res, 200, { ok: true, data: ds });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+  if (url.pathname.startsWith('/api/_/drafts/') && req.method === 'GET') {
+    const auth = currentSession(req);
+    if (!auth) { json(res, 401, { ok: false, error: '未登录' }); return true; }
+    const id = url.pathname.replace('/api/_/drafts/', '');
+    const d = db.prepare('SELECT * FROM drafts WHERE id = ? AND user_id = ?').get(id, auth.user.id);
+    if (!d) { json(res, 404, { ok: false, error: '草稿不存在' }); return true; }
+    json(res, 200, { ok: true, data: d });
+    return true;
+  }
+  if (url.pathname === '/api/_/drafts' && req.method === 'POST') {
+    const auth = currentSession(req);
+    if (!auth) { json(res, 401, { ok: false, error: '未登录' }); return true; }
+    try {
+      const { data } = await readBody(req);
+      const now = Date.now();
+      const id = data.id || crypto.randomUUID();
+      const cols = ['id','user_id','title','source_text','generated_title','generated_intro','generated_content','platform','mode','tone','length','created_at','updated_at'];
+      const placeholders = cols.map(() => '?').join(',');
+      const existing = data.id ? db.prepare('SELECT created_at FROM drafts WHERE id = ?').get(data.id) : null;
+      db.prepare(`INSERT OR REPLACE INTO drafts (${cols.join(',')}) VALUES (${placeholders})`).run(
+        id, auth.user.id,
+        String(data.title || ''), String(data.source_text || ''), String(data.generated_title || ''),
+        String(data.generated_intro || ''), String(data.generated_content || ''),
+        String(data.platform || '公众号'), String(data.mode || 'rewrite'), String(data.tone || ''),
+        String(data.length || 'standard'),
+        existing ? existing.created_at : now, now);
+      json(res, 200, { ok: true, data: { id } });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+  if (url.pathname.startsWith('/api/_/drafts/') && req.method === 'DELETE') {
+    const auth = currentSession(req);
+    if (!auth) { json(res, 401, { ok: false, error: '未登录' }); return true; }
+    const id = url.pathname.replace('/api/_/drafts/', '');
+    const n = db.prepare('DELETE FROM drafts WHERE id = ? AND user_id = ?').run(id, auth.user.id).changes;
+    if (!n) { json(res, 404, { ok: false, error: '草稿不存在' }); return true; }
+    json(res, 200, { ok: true });
     return true;
   }
 

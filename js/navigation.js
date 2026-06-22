@@ -12,6 +12,7 @@ import { renderSkills } from './pages/agent.js';
 import { renderAgent } from './pages/agent.js';
 import { renderSettings } from './pages/settings.js';
 import { renderMyAccounts } from './pages/my.js';
+import { renderDrafts } from './pages/drafts.js';
 
 export const PAGES = {
   dashboard: { tpl: 'tpl-dashboard', init: renderDashboard },
@@ -27,6 +28,7 @@ export const PAGES = {
   agent:     { tpl: 'tpl-agent',     init: renderAgent },
   my:        { tpl: 'tpl-my',        init: renderMyAccounts },
   settings:  { tpl: 'tpl-settings',  init: renderSettings },
+  drafts:    { tpl: 'tpl-drafts',    init: renderDrafts },
 };
 
 export function toggleSidebar() {

@@ -100,6 +100,9 @@
           <i data-lucide="sparkles" class="w-4 h-4"></i><span class="nav-text">AI 创作</span>
           <span class="ml-auto pill pill-brand nav-badge">New</span>
         </a>
+        <a class="nav-item flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm" data-page="drafts" data-action="gotoPage">
+          <i data-lucide="file-text" class="w-4 h-4"></i><span class="nav-text">草稿箱</span>
+        </a>
         <a class="nav-item flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm" data-page="skills" data-action="gotoPage">
           <i data-lucide="blocks" class="w-4 h-4"></i><span class="nav-text">Skill 中心</span>
           <span class="ml-auto text-[10px] text-gray-500 nav-badge" id="nav-skill-count">…</span>
@@ -663,6 +666,7 @@
           </div>
         </div>
         <button class="btn btn-ghost py-1.5 text-xs mt-2" data-action="copyRewrite"><i data-lucide="copy" class="w-3.5 h-3.5"></i>复制成稿</button>
+        <button class="btn btn-ghost py-1.5 text-xs mt-2 ml-2" data-action="saveToDrafts"><i data-lucide="save" class="w-3.5 h-3.5"></i>保存到草稿箱</button>
       </div>
       <div class="glass rounded-xl p-4">
         <h3 class="text-sm font-semibold mb-3">④ AI 封面</h3>
@@ -870,6 +874,24 @@
     <form id="notification-list" class="space-y-3 overflow-y-auto scrollbar-thin pr-1 flex-1 min-h-0"></form>
   </div>
   </div>
+</div>
+</template>
+
+<!-- ============= 草稿箱 ============= -->
+<template id="tpl-drafts">
+<div class="p-6 space-y-5">
+  <div class="page-header">
+    <div>
+      <div class="page-header-title"><i data-lucide="file-text" class="w-5 h-5 text-purple-400"></i>草稿箱</div>
+      <div class="page-header-sub">管理你的内容草稿，点击可加载到创作页继续编辑</div>
+    </div>
+  </div>
+  <div id="drafts-empty" class="text-center py-12 text-gray-500 hidden">
+    <i data-lucide="inbox" class="w-10 h-10 mx-auto mb-3 text-gray-700"></i>
+    <p class="text-sm">暂无草稿</p>
+    <p class="text-xs text-gray-600 mt-1">在创作页输入内容后，点击右侧「保存到草稿箱」即可保存</p>
+  </div>
+  <div id="drafts-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"></div>
 </div>
 </template>
 
