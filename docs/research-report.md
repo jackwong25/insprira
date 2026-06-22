@@ -1,4 +1,4 @@
-# 灵感熔炉 (Insprira) — 深度解读报告
+# 交广新媒工坊 (Insprira) — 深度解读报告
 
 > 📅 调研日期：2026-06-21 · 版本：v0.1.4 · 仓库：[coracoo/insprira](https://github.com/coracoo/insprira)
 
