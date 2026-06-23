@@ -409,7 +409,14 @@ export async function generateCover() {
       const result = await api('imageResult', { taskId: submitted.taskId });
       const urls = Array.isArray(result?.imagePaths) ? result.imagePaths : result?.imagePaths ? [result.imagePaths] : [];
       if (urls.length) {
-        resultEl.innerHTML = urls.map(url => `<a href="${safeExternalUrl(url)}" target="_blank" rel="noopener noreferrer"><img src="${proxyImage(url)}" class="w-full rounded-lg border border-white/10" alt="AI 封面" /></a>`).join('');
+        const imgHtml = urls.map(url => `<a href="${safeExternalUrl(url)}" target="_blank" rel="noopener noreferrer"><img src="${proxyImage(url)}" class="w-full rounded-lg border border-white/10" alt="AI 封面" /></a>`).join('');
+        // 自动下载到本地
+        let saveMsg = '';
+        try {
+          const saveRes = await localApi('cover/download', { method: 'POST', body: { url: urls[0] } });
+          if (saveRes?.path) saveMsg = `<div class="text-xs text-emerald-400 mt-2">已保存到本地：<code class="text-gray-300">${saveRes.filename}</code></div>`;
+        } catch {}
+        resultEl.innerHTML = imgHtml + saveMsg;
         toast('封面生成完成', 'success');
         return;
       }

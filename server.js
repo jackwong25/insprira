@@ -113,15 +113,8 @@ function restartCurrentService() {
       spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
       return;
     }
-    const isSystemd = fs.existsSync('/run/systemd/system') || fs.existsSync(path.join(os.homedir(), '.config/systemd/user/insprira.service'));
-    if (isSystemd) {
-      spawn('systemctl', ['--user', 'restart', 'insprira.service'], {
-        detached: true,
-        stdio: 'ignore',
-      }).unref();
-      return;
-    }
-    console.warn('[restart] 未检测到 systemd 服务，进程将退出。请用外层管理器（pm2 / systemd / npm start / nohup）重启。');
+    // Windows / non-systemd: just exit, rely on outer launcher (start.bat) to restart
+    console.warn('[restart] 非 systemd 环境，进程即将退出。请重新运行 start.bat 启动服务。');
     process.exit(0);
   }, 500);
 }
@@ -6922,6 +6915,34 @@ ${keywordsList}
     const n = db.prepare('DELETE FROM drafts WHERE id = ? AND user_id = ?').run(id, auth.user.id).changes;
     if (!n) { json(res, 404, { ok: false, error: '草稿不存在' }); return true; }
     json(res, 200, { ok: true });
+    return true;
+  }
+
+  // ========== 封面图片下载到本地 ==========
+  if (url.pathname === '/api/_/cover/download' && req.method === 'POST') {
+    const auth = currentSession(req);
+    if (!auth) { json(res, 401, { ok: false, error: '未登录' }); return true; }
+    try {
+      const { data } = await readBody(req);
+      const imageUrl = String(data.url || '').trim();
+      if (!imageUrl) { json(res, 400, { ok: false, error: '缺少图片地址' }); return true; }
+      const target = new URL(imageUrl);
+      // Only allow redfox.hk images
+      if (!['redfox.hk'].some(h => target.hostname === h || target.hostname.endsWith(`.${h}`))) {
+        json(res, 403, { ok: false, error: '不允许下载该地址' }); return true;
+      }
+      const downDir = path.join(__dirname, 'app', 'downloads');
+      fs.mkdirSync(downDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const ext = target.pathname.match(/\.(png|jpg|jpeg|webp)$/i)?.[1] || 'png';
+      const filename = `cover-${ts}.${ext}`;
+      const filepath = path.join(downDir, filename);
+      const response = await fetch(imageUrl, { signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error(`下载失败 HTTP ${response.status}`);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      fs.writeFileSync(filepath, buffer);
+      json(res, 200, { ok: true, data: { filename, path: filepath } });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
     return true;
   }
 
